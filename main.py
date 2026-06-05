@@ -16,6 +16,8 @@ from ai_service import analyze_room_image, generate_atomic_steps, compare_before
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 from cron import reset_expired_streaks
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
 
 
 Base.metadata.create_all(bind=engine)
@@ -909,4 +911,51 @@ def get_assistant(
         "next_evolution_at": next_at,
         "evolution_name": name,
     }
+
+@app.post("/auth/google", response_model=schemas.TokenResponse)
+def google_login(req: schemas.SocialLoginRequest, db: Session = Depends(get_db)):
+    try:
+        idinfo = google_id_token.verify_oauth2_token(
+            req.id_token,
+            google_requests.Request(),
+        )
+        email = idinfo.get("email")
+        name = idinfo.get("name", "")
+        if not email:
+            raise HTTPException(status_code=400, detail="Token Google tidak mengandung email")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Token Google tidak valid")
+
+    # Cek apakah user sudah ada
+    user = db.query(models.User).filter(models.User.email == email).first()
+
+    if not user:
+        # Buat user baru — password di-hash random karena login via Google
+        import secrets
+        random_password = secrets.token_urlsafe(32)
+        username = email.split("@")[0]
+
+        # Pastikan username unik
+        base_username = username
+        counter = 1
+        while db.query(models.User).filter(models.User.username == username).first():
+            username = f"{base_username}{counter}"
+            counter += 1
+
+        user = models.User(
+            email=email,
+            username=username,
+            password_hash=hash_password(random_password),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        # Bikin streak dan wallet default
+        db.add(models.Streak(user_id=user.id))
+        db.add(models.Wallet(user_id=user.id))
+        db.commit()
+
+    token = create_access_token(user.id)
+    return {"access_token": token, "token_type": "bearer"}
     

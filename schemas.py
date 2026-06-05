@@ -210,3 +210,6 @@ class AIAssistantResponse(BaseModel):
     total_quests_completed: int
     next_evolution_at: int | None = None
     evolution_name: str
+
+class SocialLoginRequest(BaseModel):
+    id_token: str
