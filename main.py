@@ -18,6 +18,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from cron import reset_expired_streaks
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
+import httpx
+import os
 
 
 Base.metadata.create_all(bind=engine)
@@ -86,6 +88,18 @@ def db_test():
 
 @app.post("/register", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)
 def register(user: schemas.UserRegister, db: Session = Depends(get_db)):
+    # Verifikasi captcha jika dikirim
+    recaptcha_secret = os.getenv("RECAPTCHA_SECRET")
+    if user.captcha_token and recaptcha_secret:
+        verify_url = "https://www.google.com/recaptcha/api/siteverify"
+        response = httpx.post(verify_url, data={
+            "secret": recaptcha_secret,
+            "response": user.captcha_token,
+        })
+        result = response.json()
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail="Captcha gagal, coba lagi")
+
     if db.query(models.User).filter(models.User.email == user.email).first():
         raise HTTPException(status_code=400, detail="Email sudah digunakan")
 

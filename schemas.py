@@ -19,6 +19,25 @@ class UserRegister(BaseModel):
         if not re.search(r"[!@#$%^&*()\-_=+\[\]{};:'\",.<>/?\\|`~]", v):
             raise ValueError("Password harus mengandung simbol")
         return v
+    
+class UserRegister(BaseModel):
+    email: EmailStr
+    username: str = Field(min_length=3, max_length=30)
+    password: str = Field(min_length=8)
+    captcha_token: str | None = None
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password harus mengandung huruf besar")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password harus mengandung huruf kecil")
+        if not re.search(r"\d", v):
+            raise ValueError("Password harus mengandung angka")
+        if not re.search(r"[!@#$%^&*()\-_=+\[\]{};:'\",.<>/?\\|`~]", v):
+            raise ValueError("Password harus mengandung simbol")
+        return v
 
 
 class UserResponse(BaseModel):
