@@ -1,25 +1,26 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from database import engine, Base, SessionLocal
-from auth import hash_password, verify_password, create_access_token
-import models
-import string
-import schemas
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from auth import hash_password, verify_password, create_access_token, decode_access_token
-import uuid
-from pathlib import Path
-from fastapi import UploadFile, File
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
-from ai_service import analyze_room_image, generate_atomic_steps, compare_before_after
 from fastapi.middleware.cors import CORSMiddleware
+from ai_service import analyze_room_image, generate_atomic_steps, compare_before_after
 from apscheduler.schedulers.background import BackgroundScheduler
 from cron import reset_expired_streaks
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
+from storage import upload_image, delete_image
+from pathlib import Path
+import models
+import schemas
+import string
+import uuid
+import random
 import httpx
 import os
+from datetime import datetime, timedelta, timezone
 
 
 Base.metadata.create_all(bind=engine)
@@ -31,6 +32,7 @@ ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5 MB
 
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,9 +40,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(reset_expired_streaks, "cron", hour=0, minute=0)
 scheduler.start()
+
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
@@ -51,6 +55,7 @@ def get_db():
         yield db
     finally:
         db.close()
+
 
 security = HTTPBearer()
 
@@ -71,7 +76,7 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User tidak ditemukan",
         )
-    return user        
+    return user
 
 
 @app.get("/")
@@ -122,6 +127,7 @@ def register(user: schemas.UserRegister, db: Session = Depends(get_db)):
 
     return new_user
 
+
 @app.post("/login", response_model=schemas.TokenResponse)
 def login(credentials: schemas.UserLogin, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(
@@ -137,16 +143,15 @@ def login(credentials: schemas.UserLogin, db: Session = Depends(get_db)):
     token = create_access_token(user.id)
     return {"access_token": token, "token_type": "bearer"}
 
+
 @app.get("/me", response_model=schemas.UserResponse)
 def get_me(current_user: models.User = Depends(get_current_user)):
     return current_user
 
+
 @app.post("/logout")
 def logout(current_user: models.User = Depends(get_current_user)):
     return {"message": "Logout berhasil"}
-
-import random
-from datetime import datetime, timedelta, timezone
 
 
 @app.post("/forgot-password")
@@ -217,17 +222,16 @@ def reset_password(req: schemas.ResetPasswordRequest, db: Session = Depends(get_
         raise HTTPException(status_code=400, detail="OTP tidak valid")
 
     if reset.expires_at < datetime.now(timezone.utc):
-        # Bersihkan OTP yang sudah kadaluarsa
         db.delete(reset)
         db.commit()
         raise HTTPException(status_code=400, detail="OTP sudah kadaluarsa")
 
-    # Ganti password
     user.password_hash = hash_password(req.new_password)
-    db.delete(reset)  # OTP sekali pakai
+    db.delete(reset)
     db.commit()
 
     return {"message": "Password berhasil diganti"}
+
 
 @app.patch("/profile/username", response_model=schemas.UserResponse)
 def update_username(
@@ -235,11 +239,9 @@ def update_username(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Username sama dengan sekarang? langsung kembalikan
     if req.username == current_user.username:
         return current_user
 
-    # Cek apakah username sudah dipakai user lain
     existing = db.query(models.User).filter(
         models.User.username == req.username,
         models.User.id != current_user.id,
@@ -252,6 +254,7 @@ def update_username(
     db.refresh(current_user)
     return current_user
 
+
 @app.patch("/profile/avatar", response_model=schemas.UserResponse)
 async def update_avatar(
     file: UploadFile = File(...),
@@ -259,48 +262,27 @@ async def update_avatar(
     db: Session = Depends(get_db),
 ):
     if file.content_type not in ALLOWED_IMAGE_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail="Format file harus JPG, PNG, atau WEBP",
-        )
-
+        raise HTTPException(status_code=400, detail="Format file harus JPG, PNG, atau WEBP")
     contents = await file.read()
     if len(contents) > MAX_AVATAR_SIZE:
-        raise HTTPException(
-            status_code=400,
-            detail="Ukuran file maksimal 5 MB",
-        )
-
-    # Bikin nama file unik supaya tidak tabrakan
+        raise HTTPException(status_code=400, detail="Ukuran file maksimal 5 MB")
     extension = file.content_type.split("/")[-1]
     if extension == "jpeg":
         extension = "jpg"
-    filename = f"{uuid.uuid4().hex}.{extension}"
-    filepath = UPLOAD_DIR / filename
-
-    with open(filepath, "wb") as f:
-        f.write(contents)
-
-    # Hapus avatar lama supaya file tidak menumpuk
+    filename = f"avatar_{uuid.uuid4().hex}.{extension}"
     if current_user.avatar_url:
-        old_path = Path(current_user.avatar_url.lstrip("/"))
-        if old_path.exists() and old_path.is_file():
-            try:
-                old_path.unlink()
-            except OSError:
-                pass
-
-    current_user.avatar_url = f"/uploads/{filename}"
+        delete_image(current_user.avatar_url)
+    current_user.avatar_url = upload_image(contents, filename)
     db.commit()
     db.refresh(current_user)
     return current_user
+
 
 @app.get("/dashboard", response_model=schemas.DashboardResponse)
 def get_dashboard(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Self-healing: kalau streak/wallet belum ada (user lama), bikinkan
     streak = db.query(models.Streak).filter(
         models.Streak.user_id == current_user.id
     ).first()
@@ -319,7 +301,6 @@ def get_dashboard(
         db.commit()
         db.refresh(wallet)
 
-    # Top 3 leaderboard
     top_leaderboard = []
     if current_user.ecosystem_id:
         members = db.query(models.User).filter(
@@ -349,6 +330,7 @@ def get_dashboard(
         "top_leaderboard": top_leaderboard,
     }
 
+
 def generate_join_code(length: int = 6) -> str:
     chars = string.ascii_uppercase + string.digits
     return "".join(random.choices(chars, k=length))
@@ -366,7 +348,6 @@ def create_ecosystem(
             detail="Kamu sudah tergabung di ekosistem lain. Keluar dulu sebelum bikin baru.",
         )
 
-    # Bikin kode unik, coba ulang kalau kebetulan kembar
     for _ in range(10):
         code = generate_join_code()
         existing = db.query(models.Ecosystem).filter(
@@ -382,7 +363,6 @@ def create_ecosystem(
     db.commit()
     db.refresh(ecosystem)
 
-    # Otomatis masukkan pembuat ke ekosistem ini
     current_user.ecosystem_id = ecosystem.id
     db.commit()
 
@@ -457,6 +437,7 @@ def get_ecosystem(
         "members": members,
     }
 
+
 COINS_PER_QUEST = 10
 
 
@@ -491,6 +472,7 @@ def start_quest(
 
     return {"session_id": session.id, "message": "ready"}
 
+
 @app.post("/quest/{session_id}/mental-break")
 def take_mental_break(
     session_id: int,
@@ -515,6 +497,7 @@ def take_mental_break(
         db.commit()
 
     return {"message": "Istirahat dulu ya. Streak kamu aman hari ini."}
+
 
 @app.post("/quest/{session_id}/before-image", response_model=schemas.QuestSessionResponse)
 async def upload_before_image(
@@ -542,20 +525,22 @@ async def upload_before_image(
     if extension == "jpeg":
         extension = "jpg"
     filename = f"before_{uuid.uuid4().hex}.{extension}"
-    filepath = UPLOAD_DIR / filename
-    with open(filepath, "wb") as f:
+
+    image_url = upload_image(contents, filename)
+    session.before_image_url = image_url
+
+    # Untuk YOLOv8 lokal, simpan juga ke disk sementara
+    local_path = f"uploads/{filename}"
+    Path("uploads").mkdir(exist_ok=True)
+    with open(local_path, "wb") as f:
         f.write(contents)
 
-    # Simulasi YOLOv8
-    analysis = analyze_room_image(str(filepath))
-
-    session.before_image_url = f"/uploads/{filename}"
+    analysis = analyze_room_image(local_path)
     session.hoarding_index_before = analysis["hoarding_index"]
     session.target_items = analysis["target_items"]
     session.status = "active"
     db.commit()
 
-    # Simulasi LLM — generate langkah atomik
     steps = generate_atomic_steps(analysis["target_items"])
     for i, instruction in enumerate(steps):
         step = models.QuestStep(
@@ -568,6 +553,7 @@ async def upload_before_image(
     db.refresh(session)
 
     return session
+
 
 @app.get("/quest/{session_id}/steps", response_model=list[schemas.QuestStepResponse])
 def get_quest_steps(
@@ -614,6 +600,7 @@ def mark_step_done(
     db.refresh(step)
     return step
 
+
 @app.post("/quest/{session_id}/after-image", response_model=schemas.QuestSessionResponse)
 async def upload_after_image(
     session_id: int,
@@ -640,16 +627,20 @@ async def upload_after_image(
     if extension == "jpeg":
         extension = "jpg"
     filename = f"after_{uuid.uuid4().hex}.{extension}"
-    filepath = UPLOAD_DIR / filename
-    with open(filepath, "wb") as f:
+
+    image_url = upload_image(contents, filename)
+    session.after_image_url = image_url
+
+    # Untuk YOLOv8 lokal
+    local_path = f"uploads/{filename}"
+    Path("uploads").mkdir(exist_ok=True)
+    with open(local_path, "wb") as f:
         f.write(contents)
 
     comparison = compare_before_after(
         session.before_image_url or "",
-        str(filepath),
+        local_path,
     )
-
-    session.after_image_url = f"/uploads/{filename}"
     session.hoarding_index_after = max(
         0, session.hoarding_index_before - comparison["improvement_percent"] // 10
     )
@@ -663,6 +654,7 @@ async def upload_after_image(
         )
 
     return session
+
 
 @app.post("/quest/{session_id}/complete", response_model=schemas.QuestCompleteResponse)
 def complete_quest(
@@ -737,6 +729,7 @@ def complete_quest(
         db.add(assistant)
     assistant.total_quests_completed += 1
     db.commit()
+
     return {
         "message": "Quest selesai! Hebat!",
         "coins_earned": COINS_PER_QUEST,
@@ -745,6 +738,7 @@ def complete_quest(
         "mood_after": req.mood_after,
         "improvement_percent": max(0, (session.hoarding_index_before or 0) - (session.hoarding_index_after or 0)) * 10,
     }
+
 
 @app.get("/leaderboard", response_model=list[schemas.LeaderboardEntry])
 def get_leaderboard(
@@ -783,6 +777,7 @@ def get_leaderboard(
         entry["rank"] = i + 1
 
     return entries
+
 
 @app.get("/rewards", response_model=list[schemas.RewardResponse])
 def get_rewards(
@@ -836,6 +831,7 @@ def claim_reward(
         "coin_balance": wallet.coin_balance,
     }
 
+
 @app.get("/badges", response_model=list[schemas.BadgeResponse])
 def get_badges(
     current_user: models.User = Depends(get_current_user),
@@ -861,6 +857,7 @@ def get_badges(
         })
     return result
 
+
 @app.get("/streak", response_model=schemas.StreakResponse)
 def get_streak(
     current_user: models.User = Depends(get_current_user),
@@ -875,7 +872,6 @@ def get_streak(
         db.commit()
         db.refresh(streak)
 
-    # Cari badge berikutnya yang belum didapat
     earned_ids = {
         ub.badge_id
         for ub in db.query(models.UserBadge).filter(
@@ -894,6 +890,7 @@ def get_streak(
         "next_badge_streak": next_badge.criteria_streak if next_badge else None,
         "days_to_next_badge": max(0, next_badge.criteria_streak - streak.current_streak) if next_badge else None,
     }
+
 
 @app.get("/mood-history", response_model=list[schemas.MoodHistoryEntry])
 def get_mood_history(
@@ -916,6 +913,7 @@ def get_mood_history(
             "created_at": str(log.created_at),
         })
     return result
+
 
 EVOLUTION_THRESHOLDS = [
     (1, "Bibit"),
@@ -963,6 +961,7 @@ def get_assistant(
         "evolution_name": name,
     }
 
+
 @app.post("/auth/google", response_model=schemas.TokenResponse)
 def google_login(req: schemas.SocialLoginRequest, db: Session = Depends(get_db)):
     try:
@@ -977,16 +976,13 @@ def google_login(req: schemas.SocialLoginRequest, db: Session = Depends(get_db))
     except ValueError:
         raise HTTPException(status_code=401, detail="Token Google tidak valid")
 
-    # Cek apakah user sudah ada
     user = db.query(models.User).filter(models.User.email == email).first()
 
     if not user:
-        # Buat user baru — password di-hash random karena login via Google
         import secrets
         random_password = secrets.token_urlsafe(32)
         username = email.split("@")[0]
 
-        # Pastikan username unik
         base_username = username
         counter = 1
         while db.query(models.User).filter(models.User.username == username).first():
@@ -1002,11 +998,9 @@ def google_login(req: schemas.SocialLoginRequest, db: Session = Depends(get_db))
         db.commit()
         db.refresh(user)
 
-        # Bikin streak dan wallet default
         db.add(models.Streak(user_id=user.id))
         db.add(models.Wallet(user_id=user.id))
         db.commit()
 
     token = create_access_token(user.id)
     return {"access_token": token, "token_type": "bearer"}
-    
