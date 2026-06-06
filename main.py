@@ -777,7 +777,7 @@ def complete_quest(
     }
 
 
-@app.get("/leaderboard", response_model=list[schemas.LeaderboardEntry])
+@app.get("/leaderboard")
 def get_leaderboard(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -801,6 +801,7 @@ def get_leaderboard(
             models.Wallet.user_id == member.id
         ).first()
         entries.append({
+            "user_id": member.id,
             "username": member.username,
             "avatar_url": member.avatar_url,
             "current_streak": streak.current_streak if streak else 0,
@@ -808,12 +809,27 @@ def get_leaderboard(
         })
 
     entries.sort(key=lambda x: (x["current_streak"], x["coin_balance"]), reverse=True)
-    entries = entries[:10]
 
     for i, entry in enumerate(entries):
         entry["rank"] = i + 1
 
-    return entries
+    # Cari posisi user sendiri
+    my_rank = None
+    my_entry = None
+    for entry in entries:
+        if entry["user_id"] == current_user.id:
+            my_rank = entry["rank"]
+            my_entry = entry
+            break
+
+    top_10 = entries[:10]
+
+    return {
+        "top_10": top_10,
+        "my_rank": my_rank,
+        "my_entry": my_entry,
+        "total_members": len(entries),
+    }
 
 
 @app.get("/rewards", response_model=list[schemas.RewardResponse])
