@@ -21,7 +21,11 @@ import random
 import httpx
 import os
 from datetime import datetime, timedelta, timezone
-
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 
 Base.metadata.create_all(bind=engine)
 
@@ -32,6 +36,13 @@ ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5 MB
 
 app = FastAPI()
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request, exc):
+    return JSONResponse(status_code=429, content={"detail": "Terlalu banyak request, coba lagi nanti"})
 
 app.add_middleware(
     CORSMiddleware,
@@ -92,7 +103,8 @@ def db_test():
 
 
 @app.post("/register", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)
-def register(user: schemas.UserRegister, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def register(request: Request, user: schemas.UserRegister, db: Session = Depends(get_db)):
     # Verifikasi captcha jika dikirim
     recaptcha_secret = os.getenv("RECAPTCHA_SECRET")
     if user.captcha_token and recaptcha_secret:
@@ -120,7 +132,6 @@ def register(user: schemas.UserRegister, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
 
-    # Bikin streak dan wallet default untuk user baru
     db.add(models.Streak(user_id=new_user.id))
     db.add(models.Wallet(user_id=new_user.id))
     db.commit()
@@ -129,7 +140,8 @@ def register(user: schemas.UserRegister, db: Session = Depends(get_db)):
 
 
 @app.post("/login", response_model=schemas.TokenResponse)
-def login(credentials: schemas.UserLogin, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def login(request: Request, credentials: schemas.UserLogin, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(
         models.User.username == credentials.username
     ).first()
@@ -143,7 +155,6 @@ def login(credentials: schemas.UserLogin, db: Session = Depends(get_db)):
     token = create_access_token(user.id)
     return {"access_token": token, "token_type": "bearer"}
 
-
 @app.get("/me", response_model=schemas.UserResponse)
 def get_me(current_user: models.User = Depends(get_current_user)):
     return current_user
@@ -155,7 +166,8 @@ def logout(current_user: models.User = Depends(get_current_user)):
 
 
 @app.post("/forgot-password")
-def forgot_password(req: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("3/minute")
+def forgot_password(request: Request, req: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == req.email).first()
 
     generic_response = {"message": "Jika email terdaftar, instruksi telah dikirim"}
@@ -174,7 +186,6 @@ def forgot_password(req: schemas.ForgotPasswordRequest, db: Session = Depends(ge
     db.add(reset)
     db.commit()
 
-    # Kirim email beneran via Resend
     resend_key = os.getenv("RESEND_API_KEY")
     if resend_key:
         try:
@@ -494,6 +505,15 @@ def take_mental_break(
     ).first()
     if mood_log:
         mood_log.took_break = True
+        db.commit()
+
+    # Lindungi streak — tandai hari ini sebagai "selesai" supaya cron tidak reset
+    streak = db.query(models.Streak).filter(
+        models.Streak.user_id == current_user.id
+    ).first()
+    if streak:
+        from datetime import date
+        streak.last_completed_date = date.today()
         db.commit()
 
     return {"message": "Istirahat dulu ya. Streak kamu aman hari ini."}
@@ -1004,3 +1024,44 @@ def google_login(req: schemas.SocialLoginRequest, db: Session = Depends(get_db))
 
     token = create_access_token(user.id)
     return {"access_token": token, "token_type": "bearer"}
+
+@app.post("/ecosystem/leave")
+def leave_ecosystem(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not current_user.ecosystem_id:
+        raise HTTPException(status_code=400, detail="Kamu belum tergabung di ekosistem manapun")
+    current_user.ecosystem_id = None
+    db.commit()
+    return {"message": "Berhasil keluar dari ekosistem"}
+
+@app.get("/profile", response_model=schemas.ProfileResponse)
+def get_profile(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    badges = db.query(models.Badge).order_by(models.Badge.criteria_streak).all()
+    earned_ids = {
+        ub.badge_id
+        for ub in db.query(models.UserBadge).filter(
+            models.UserBadge.user_id == current_user.id
+        ).all()
+    }
+    badge_list = []
+    for b in badges:
+        badge_list.append({
+            "id": b.id,
+            "name": b.name,
+            "description": b.description,
+            "criteria_streak": b.criteria_streak,
+            "icon_url": b.icon_url,
+            "earned": b.id in earned_ids,
+        })
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "username": current_user.username,
+        "avatar_url": current_user.avatar_url,
+        "badges": badge_list,
+    }

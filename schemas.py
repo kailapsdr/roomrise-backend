@@ -230,3 +230,13 @@ class AIAssistantResponse(BaseModel):
 
 class SocialLoginRequest(BaseModel):
     id_token: str
+
+class ProfileResponse(BaseModel):
+    id: int
+    email: EmailStr
+    username: str
+    avatar_url: str | None = None
+    badges: list[BadgeResponse] = []
+
+    class Config:
+        from_attributes = True
