@@ -153,19 +153,15 @@ from datetime import datetime, timedelta, timezone
 def forgot_password(req: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == req.email).first()
 
-    # Balasan selalu sama, baik email terdaftar maupun tidak — biar tidak bisa dipakai
-    # untuk menebak email mana yang punya akun (best practice keamanan)
     generic_response = {"message": "Jika email terdaftar, instruksi telah dikirim"}
 
     if not user:
         return generic_response
 
-    # Hapus OTP lama yang belum kepakai untuk user ini
     db.query(models.PasswordReset).filter(
         models.PasswordReset.user_id == user.id
     ).delete()
 
-    # Bikin OTP 6 digit
     otp = f"{random.randint(0, 999999):06d}"
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
 
@@ -173,12 +169,31 @@ def forgot_password(req: schemas.ForgotPasswordRequest, db: Session = Depends(ge
     db.add(reset)
     db.commit()
 
-    # PENGEMBANGAN: cetak ke terminal. Nanti ganti dengan kirim email beneran.
-    print("=" * 60)
-    print(f"  PASSWORD RESET OTP untuk {user.email}")
-    print(f"  OTP: {otp}")
-    print(f"  Kadaluarsa: {expires_at.isoformat()}")
-    print("=" * 60)
+    # Kirim email beneran via Resend
+    resend_key = os.getenv("RESEND_API_KEY")
+    if resend_key:
+        try:
+            import resend
+            resend.api_key = resend_key
+            resend.Emails.send({
+                "from": "RoomRise <onboarding@resend.dev>",
+                "to": [user.email],
+                "subject": "Kode Reset Password RoomRise",
+                "html": f"""
+                    <h2>Reset Password RoomRise</h2>
+                    <p>Hai {user.username},</p>
+                    <p>Kode OTP kamu untuk reset password:</p>
+                    <h1 style="color: #2d6a4f; letter-spacing: 8px;">{otp}</h1>
+                    <p>Kode ini berlaku 15 menit.</p>
+                    <p>Kalau kamu tidak meminta reset password, abaikan email ini.</p>
+                """,
+            })
+            print(f"[EMAIL] OTP terkirim ke {user.email}")
+        except Exception as e:
+            print(f"[EMAIL] Gagal kirim: {e}")
+            print(f"[EMAIL] Fallback — OTP: {otp}")
+    else:
+        print(f"[EMAIL] Resend tidak diset — OTP: {otp}")
 
     return generic_response
 
