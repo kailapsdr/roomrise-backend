@@ -75,7 +75,19 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db),
 ) -> models.User:
-    user_id = decode_access_token(credentials.credentials)
+    token = credentials.credentials
+
+    # Cek apakah token sudah di-blacklist
+    blacklisted = db.query(models.TokenBlacklist).filter(
+        models.TokenBlacklist.token == token
+    ).first()
+    if blacklisted:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token sudah tidak berlaku (logout)",
+        )
+
+    user_id = decode_access_token(token)
     if user_id is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -161,9 +173,14 @@ def get_me(current_user: models.User = Depends(get_current_user)):
 
 
 @app.post("/logout")
-def logout(current_user: models.User = Depends(get_current_user)):
+def logout(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    db.add(models.TokenBlacklist(token=credentials.credentials))
+    db.commit()
     return {"message": "Logout berhasil"}
-
 
 @app.post("/forgot-password")
 @limiter.limit("3/minute")
@@ -561,7 +578,7 @@ async def upload_before_image(
     session.status = "active"
     db.commit()
 
-    steps = generate_atomic_steps(analysis["target_items"])
+    steps = generate_atomic_steps(analysis["target_items"], analysis.get("detected_objects"))
     for i, instruction in enumerate(steps):
         step = models.QuestStep(
             session_id=session.id,

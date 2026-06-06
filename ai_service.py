@@ -53,32 +53,50 @@ def analyze_room_image(image_path: str) -> dict:
         total_objects = len(detections)
         hoarding_index = min(10, max(1, total_objects // 2))
         target_items = min(7, max(3, total_objects))
-        return {"hoarding_index": hoarding_index, "target_items": target_items}
+
+        # Ambil nama objek yang terdeteksi
+        names = results[0].names
+        detected_objects = []
+        for box in detections:
+            cls_id = int(box.cls[0])
+            detected_objects.append(names.get(cls_id, "barang"))
+
+        return {
+            "hoarding_index": hoarding_index,
+            "target_items": target_items,
+            "detected_objects": detected_objects,
+        }
     else:
         return {
             "hoarding_index": random.randint(3, 10),
             "target_items": random.randint(3, 7),
+            "detected_objects": [],
         }
 
 
-def generate_atomic_steps(target_items: int) -> list[str]:
+def generate_atomic_steps(target_items: int, detected_objects: list[str] | None = None) -> list[str]:
     if USE_LLM:
         try:
+            context = ""
+            if detected_objects:
+                obj_list = ", ".join(detected_objects[:10])
+                context = f"\nBarang yang terdeteksi di ruangan: {obj_list}."
+
             prompt = f"""Kamu adalah asisten yang membantu orang dengan executive dysfunction untuk merapikan kamar.
-Buatkan tepat {target_items} langkah SANGAT SEDERHANA dan SPESIFIK untuk merapikan kamar.
+Buatkan tepat {target_items} langkah SANGAT SEDERHANA dan SPESIFIK untuk merapikan kamar.{context}
 
 Aturan:
 - Setiap langkah harus bisa dikerjakan dalam 1-2 menit
 - Gunakan bahasa Indonesia yang ramah dan tidak menghakimi
 - Setiap langkah dimulai dengan kata kerja aksi (Ambil, Lipat, Taruh, dll)
 - Jangan gunakan kata "semua" — fokus pada SATU barang per langkah
+- Kalau ada daftar barang terdeteksi, sebutkan barang spesifik itu dalam langkah
 
 Balas HANYA dalam format JSON array of strings, tanpa penjelasan lain.
 Contoh: ["Ambil satu baju kotor di lantai dan taruh ke keranjang", "Buang satu bungkus snack ke tempat sampah"]"""
 
             response = gemini_model.generate_content(prompt)
             text = response.text.strip()
-            # Bersihkan kalau ada markdown backtick
             text = text.replace("```json", "").replace("```", "").strip()
             steps = json.loads(text)
             if isinstance(steps, list) and len(steps) >= target_items:

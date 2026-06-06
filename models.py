@@ -128,3 +128,10 @@ class AIAssistant(Base):
     user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
     evolution_level = Column(Integer, nullable=False, default=1)
     total_quests_completed = Column(Integer, nullable=False, default=0)
+
+class TokenBlacklist(Base):
+    __tablename__ = "token_blacklist"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String, nullable=False, index=True)
+    blacklisted_at = Column(DateTime(timezone=True), server_default=func.now())
