@@ -319,12 +319,34 @@ def get_dashboard(
         db.commit()
         db.refresh(wallet)
 
+    # Top 3 leaderboard
+    top_leaderboard = []
+    if current_user.ecosystem_id:
+        members = db.query(models.User).filter(
+            models.User.ecosystem_id == current_user.ecosystem_id
+        ).all()
+        entries = []
+        for member in members:
+            s = db.query(models.Streak).filter(models.Streak.user_id == member.id).first()
+            w = db.query(models.Wallet).filter(models.Wallet.user_id == member.id).first()
+            entries.append({
+                "username": member.username,
+                "avatar_url": member.avatar_url,
+                "current_streak": s.current_streak if s else 0,
+                "coin_balance": w.coin_balance if w else 0,
+            })
+        entries.sort(key=lambda x: (x["current_streak"], x["coin_balance"]), reverse=True)
+        for i, entry in enumerate(entries[:3]):
+            entry["rank"] = i + 1
+        top_leaderboard = entries[:3]
+
     return {
         "username": current_user.username,
         "avatar_url": current_user.avatar_url,
         "current_streak": streak.current_streak,
         "coin_balance": wallet.coin_balance,
         "is_new_user": streak.last_completed_date is None,
+        "top_leaderboard": top_leaderboard,
     }
 
 def generate_join_code(length: int = 6) -> str:
