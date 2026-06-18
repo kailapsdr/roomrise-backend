@@ -26,6 +26,9 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from fastapi.responses import JSONResponse
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 Base.metadata.create_all(bind=engine)
 
@@ -203,30 +206,36 @@ def forgot_password(request: Request, req: schemas.ForgotPasswordRequest, db: Se
     db.add(reset)
     db.commit()
 
-    resend_key = os.getenv("RESEND_API_KEY")
-    if resend_key:
+  
+
+    gmail_user = os.getenv("GMAIL_USER")
+    gmail_pass = os.getenv("GMAIL_APP_PASSWORD")
+    if gmail_user and gmail_pass:
         try:
-            import resend
-            resend.api_key = resend_key
-            resend.Emails.send({
-                "from": "RoomRise <onboarding@resend.dev>",
-                "to": [user.email],
-                "subject": "Kode Reset Password RoomRise",
-                "html": f"""
-                    <h2>Reset Password RoomRise</h2>
-                    <p>Hai {user.username},</p>
-                    <p>Kode OTP kamu untuk reset password:</p>
-                    <h1 style="color: #2d6a4f; letter-spacing: 8px;">{otp}</h1>
-                    <p>Kode ini berlaku 15 menit.</p>
-                    <p>Kalau kamu tidak meminta reset password, abaikan email ini.</p>
-                """,
-            })
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = "Kode Reset Password RoomRise"
+            msg["From"] = f"RoomRise <{gmail_user}>"
+            msg["To"] = user.email
+
+            html = f"""
+                <h2>Reset Password RoomRise</h2>
+                <p>Hai {user.username},</p>
+                <p>Kode OTP kamu untuk reset password:</p>
+                <h1 style="color: #2d6a4f; letter-spacing: 8px;">{otp}</h1>
+                <p>Kode ini berlaku 15 menit.</p>
+                <p>Kalau kamu tidak meminta reset password, abaikan email ini.</p>
+            """
+            msg.attach(MIMEText(html, "html"))
+
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(gmail_user, gmail_pass)
+                server.sendmail(gmail_user, user.email, msg.as_string())
+
             print(f"[EMAIL] OTP terkirim ke {user.email}")
         except Exception as e:
             print(f"[EMAIL] Gagal kirim: {e}")
-            print(f"[EMAIL] Fallback — OTP: {otp}")
     else:
-        print(f"[EMAIL] Resend tidak diset — OTP: {otp}")
+        print(f"[EMAIL] Gmail tidak diset — OTP: {otp}")
 
     return generic_response
 
