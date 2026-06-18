@@ -190,7 +190,6 @@ def logout(
 @limiter.limit("3/minute")
 def forgot_password(request: Request, req: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == req.email).first()
-
     generic_response = {"message": "Jika email terdaftar, instruksi telah dikirim"}
 
     if not user:
@@ -207,38 +206,40 @@ def forgot_password(request: Request, req: schemas.ForgotPasswordRequest, db: Se
     db.add(reset)
     db.commit()
 
-  
-sendgrid_key = os.getenv("SENDGRID_API_KEY")
-if sendgrid_key:
-    try:
-        response = httpx.post(
-            "https://api.sendgrid.com/v3/mail/send",
-            headers={
-                "Authorization": f"Bearer {sendgrid_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "personalizations": [{"to": [{"email": user.email}]}],
-                "from": {"email": "noreply.roomise@gmail.com", "name": "RoomRise"},
-                "subject": "Kode Reset Password RoomRise",
-                "content": [{"type": "text/html", "value": f"""
-                    <h2>Reset Password RoomRise</h2>
-                    <p>Hai {user.username},</p>
-                    <p>Kode OTP kamu untuk reset password:</p>
-                    <h1 style="color: #2d6a4f; letter-spacing: 8px;">{otp}</h1>
-                    <p>Kode ini berlaku 15 menit.</p>
-                    <p>Kalau kamu tidak meminta reset password, abaikan email ini.</p>
-                """}],
-            },
-        )
-        if response.status_code == 202:
-            print(f"[EMAIL] OTP terkirim ke {user.email}")
-        else:
-            print(f"[EMAIL] Gagal kirim: {response.text}")
-    except Exception as e:
-        print(f"[EMAIL] Gagal kirim: {e}")
-else:
-    print(f"[EMAIL] SendGrid tidak diset — OTP: {otp}")
+    # ✅ MASUK ke dalam fungsi (indentasi 4 spasi)
+    sendgrid_key = os.getenv("SENDGRID_API_KEY")
+    if sendgrid_key:
+        try:
+            response = httpx.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                headers={
+                    "Authorization": f"Bearer {sendgrid_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "personalizations": [{"to": [{"email": user.email}]}],
+                    "from": {"email": "noreply.roomise@gmail.com", "name": "RoomRise"},
+                    "subject": "Kode Reset Password RoomRise",
+                    "content": [{"type": "text/html", "value": f"""
+                        <h2>Reset Password RoomRise</h2>
+                        <p>Hai {user.username},</p>
+                        <p>Kode OTP kamu untuk reset password:</p>
+                        <h1 style="color: #2d6a4f; letter-spacing: 8px;">{otp}</h1>
+                        <p>Kode ini berlaku 15 menit.</p>
+                        <p>Kalau kamu tidak meminta reset password, abaikan email ini.</p>
+                    """}],
+                },
+            )
+            if response.status_code == 202:
+                print(f"[EMAIL] OTP terkirim ke {user.email}")
+            else:
+                print(f"[EMAIL] Gagal kirim: {response.text}")
+        except Exception as e:
+            print(f"[EMAIL] Gagal kirim: {e}")
+    else:
+        print(f"[EMAIL] SendGrid tidak diset — OTP: {otp}")
+
+    return generic_response  
 
 
 @app.post("/reset-password")
