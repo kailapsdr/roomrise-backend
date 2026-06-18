@@ -29,6 +29,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, R
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import httpx
 
 Base.metadata.create_all(bind=engine)
 
@@ -207,37 +208,37 @@ def forgot_password(request: Request, req: schemas.ForgotPasswordRequest, db: Se
     db.commit()
 
   
-
-    gmail_user = os.getenv("GMAIL_USER")
-    gmail_pass = os.getenv("GMAIL_APP_PASSWORD")
-    if gmail_user and gmail_pass:
-        try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = "Kode Reset Password RoomRise"
-            msg["From"] = f"RoomRise <{gmail_user}>"
-            msg["To"] = user.email
-
-            html = f"""
-                <h2>Reset Password RoomRise</h2>
-                <p>Hai {user.username},</p>
-                <p>Kode OTP kamu untuk reset password:</p>
-                <h1 style="color: #2d6a4f; letter-spacing: 8px;">{otp}</h1>
-                <p>Kode ini berlaku 15 menit.</p>
-                <p>Kalau kamu tidak meminta reset password, abaikan email ini.</p>
-            """
-            msg.attach(MIMEText(html, "html"))
-
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                server.login(gmail_user, gmail_pass)
-                server.sendmail(gmail_user, user.email, msg.as_string())
-
+sendgrid_key = os.getenv("SENDGRID_API_KEY")
+if sendgrid_key:
+    try:
+        response = httpx.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers={
+                "Authorization": f"Bearer {sendgrid_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "personalizations": [{"to": [{"email": user.email}]}],
+                "from": {"email": "noreply.roomise@gmail.com", "name": "RoomRise"},
+                "subject": "Kode Reset Password RoomRise",
+                "content": [{"type": "text/html", "value": f"""
+                    <h2>Reset Password RoomRise</h2>
+                    <p>Hai {user.username},</p>
+                    <p>Kode OTP kamu untuk reset password:</p>
+                    <h1 style="color: #2d6a4f; letter-spacing: 8px;">{otp}</h1>
+                    <p>Kode ini berlaku 15 menit.</p>
+                    <p>Kalau kamu tidak meminta reset password, abaikan email ini.</p>
+                """}],
+            },
+        )
+        if response.status_code == 202:
             print(f"[EMAIL] OTP terkirim ke {user.email}")
-        except Exception as e:
-            print(f"[EMAIL] Gagal kirim: {e}")
-    else:
-        print(f"[EMAIL] Gmail tidak diset — OTP: {otp}")
-
-    return generic_response
+        else:
+            print(f"[EMAIL] Gagal kirim: {response.text}")
+    except Exception as e:
+        print(f"[EMAIL] Gagal kirim: {e}")
+else:
+    print(f"[EMAIL] SendGrid tidak diset — OTP: {otp}")
 
 
 @app.post("/reset-password")
